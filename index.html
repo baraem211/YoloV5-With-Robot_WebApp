@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>🤖 YOLOv5 + Humanoid Robot Control</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.4.0/css/all.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.17.0/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd@2.2.3/dist/coco-ssd.min.js"></script>
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+<!-- ────────────────── HEADER ────────────────── -->
+<header id="app-header">
+  <div class="logo-wrap">
+    <span class="logo-icon">🤖</span>
+    <div class="logo-text">
+      <h1>YOLOv5 + Humanoid Robot Control</h1>
+      <span class="logo-sub">COCO-SSD Real-time Detection · 115200 bps</span>
+    </div>
+  </div>
+
+  <nav class="header-tabs">
+    <button class="tab-btn active" data-tab="main">
+      <i class="fas fa-eye"></i> 메인
+    </button>
+    <button class="tab-btn" data-tab="packet">
+      <i class="fas fa-code"></i> 패킷 빌더
+    </button>
+    <button class="tab-btn" data-tab="docs">
+      <i class="fas fa-book"></i> 문서
+    </button>
+  </nav>
+
+  <!-- Web Serial 연결 버튼 (Chrome/Edge 전용) -->
+  <div class="serial-connect-wrap" id="serial-connect-wrap">
+    <span class="serial-badge badge-disconnected" id="serial-status-badge">⭕ 미연결</span>
+    <button class="btn-primary hidden" id="serial-connect-btn" title="포트 선택 후 연결">
+      <i class="fas fa-plug"></i> 포트 연결
+    </button>
+  </div>
+
+  <div class="header-status">
+    <div class="status-dot" id="system-status-dot"></div>
+    <span id="system-status-text">초기화 중...</span>
+  </div>
+</header>
+
+<!-- ────────────────── MAIN ────────────────── -->
+<main id="app-main">
+
+  <!-- ═══════════════ TAB: MAIN ═══════════════ -->
+  <section id="tab-main" class="tab-panel active">
+
+    <!-- 초기화 오버레이 (모델 로드 중) -->
+    <div id="init-overlay" class="init-overlay">
+      <div class="init-box">
+        <div class="init-spinner"><i class="fas fa-brain"></i></div>
+        <h2>AI 모델 로딩 중...</h2>
+        <p id="init-msg">TensorFlow.js 초기화 중...</p>
+        <div class="progress-bar-track" style="margin-top:16px;">
+          <div class="progress-bar-fill" id="init-fill" style="width:0%"></div>
+        </div>
+        <p class="init-note">COCO-SSD 모델 최초 로드 시 수 초 소요됩니다</p>
+      </div>
+    </div>
+
+    <!-- 카메라 권한 오류 오버레이 -->
+    <div id="cam-error-overlay" class="init-overlay hidden">
+      <div class="init-box error-box">
+        <i class="fas fa-video-slash" style="font-size:48px;color:var(--red);margin-bottom:16px;"></i>
+        <h2>카메라 권한 필요</h2>
+        <p>브라우저에서 카메라 접근을 허용해주세요.</p>
+        <p style="font-size:12px;color:var(--text-muted);margin-top:8px;">주소창 좌측 🔒 아이콘 → 카메라 → 허용</p>
+        <button class="btn-primary" style="margin-top:20px;" onclick="location.reload()">
+          <i class="fas fa-redo"></i> 다시 시도
+        </button>
+      </div>
+    </div>
+
+    <div class="main-layout">
+
+      <!-- ── LEFT: 카메라 + 탐지 ── -->
+      <div class="col-camera">
+
+        <!-- 카메라 뷰 -->
+        <div class="cam-panel">
+          <div class="cam-panel-header">
+            <span class="cam-title"><i class="fas fa-circle rec-dot" id="rec-dot"></i> LIVE · COCO-SSD</span>
+            <span class="cam-fps" id="fps-counter">-- FPS</span>
+            <span class="cam-conf">CONF ≥ <span id="conf-display">0.45</span></span>
+            <button class="icon-btn" id="toggle-detection-btn" title="탐지 ON/OFF">
+              <i class="fas fa-eye"></i>
+            </button>
+          </div>
+          <div class="cam-wrap" id="cam-wrap">
+            <video id="webcam-video" autoplay playsinline muted></video>
+            <canvas id="detection-canvas"></canvas>
+          </div>
+          <div class="cam-panel-footer">
+            <label class="conf-label">신뢰도 임계값</label>
+            <input type="range" id="conf-slider" min="0.1" max="0.9" step="0.05" value="0.45" />
+            <span id="conf-value">0.45</span>
+          </div>
+        </div>
+
+        <!-- 탐지 로그 -->
+        <div class="panel">
+          <div class="panel-header">
+            <i class="fas fa-list-ul"></i>
+            <span>실시간 탐지 결과</span>
+            <button class="icon-btn ml-auto" id="clear-log-btn"><i class="fas fa-trash"></i></button>
+          </div>
+          <div class="detection-log" id="detection-log">
+            <div class="log-empty"><i class="fas fa-spinner fa-spin"></i> 탐지 대기 중...</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── CENTER: 로봇 + 상태 ── -->
+      <div class="col-robot">
+
+        <!-- 로봇 상태 패널 -->
+        <div class="panel robot-panel">
+          <div class="panel-header">
+            <i class="fas fa-robot"></i>
+            <span>로봇 상태</span>
+            <span class="panel-badge" id="port-badge">
+              <i class="fas fa-plug"></i> 미연결 · 115200
+            </span>
+          </div>
+          <div class="robot-display">
+            <div class="robot-svg-wrap">
+              <svg id="robot-svg" viewBox="0 0 200 350" xmlns="http://www.w3.org/2000/svg">
+                <rect x="70" y="20" width="60" height="50" rx="10" class="robot-part" id="rp-head"/>
+                <circle cx="87" cy="40" r="8" class="robot-eye"/>
+                <circle cx="113" cy="40" r="8" class="robot-eye"/>
+                <circle cx="87" cy="40" r="4" class="robot-pupil" id="rp-pupil-l"/>
+                <circle cx="113" cy="40" r="4" class="robot-pupil" id="rp-pupil-r"/>
+                <path d="M 85 60 Q 100 70 115 60" stroke="#00f5ff" stroke-width="2" fill="none" id="rp-mouth"/>
+                <rect x="90" y="70" width="20" height="15" rx="3" class="robot-part"/>
+                <rect x="55" y="85" width="90" height="100" rx="12" class="robot-part" id="rp-body"/>
+                <rect x="70" y="100" width="60" height="40" rx="6" class="robot-screen"/>
+                <rect x="20" y="90" width="28" height="85" rx="10" class="robot-part" id="rp-arm-l"/>
+                <rect x="152" y="90" width="28" height="85" rx="10" class="robot-part" id="rp-arm-r"/>
+                <circle cx="34" cy="185" r="12" class="robot-part"/>
+                <circle cx="166" cy="185" r="12" class="robot-part"/>
+                <rect x="65" y="185" width="70" height="18" rx="5" class="robot-part"/>
+                <rect x="65" y="203" width="30" height="90" rx="10" class="robot-part" id="rp-leg-l"/>
+                <rect x="105" y="203" width="30" height="90" rx="10" class="robot-part" id="rp-leg-r"/>
+                <rect x="55" y="290" width="42" height="18" rx="6" class="robot-part"/>
+                <rect x="103" y="290" width="42" height="18" rx="6" class="robot-part"/>
+                <circle cx="100" cy="155" r="6" class="robot-status-light" id="rp-status-light"/>
+                <text x="100" y="118" text-anchor="middle" class="robot-screen-text" id="rp-screen-text">IDLE</text>
+                <text x="100" y="132" text-anchor="middle" class="robot-screen-subtext" id="rp-screen-sub">대기 중</text>
+              </svg>
+            </div>
+
+            <div class="robot-info">
+              <div class="robot-info-row">
+                <span class="info-label"><i class="fas fa-tachometer-alt"></i> 상태</span>
+                <span class="info-value" id="robot-info-state">초기화 중</span>
+              </div>
+              <div class="robot-info-row">
+                <span class="info-label"><i class="fas fa-running"></i> 모션</span>
+                <span class="info-value" id="robot-info-motion">없음</span>
+              </div>
+              <div class="robot-info-row">
+                <span class="info-label"><i class="fas fa-clock"></i> 타이머</span>
+                <span class="info-value" id="robot-info-timer">--</span>
+              </div>
+              <div class="robot-info-row">
+                <span class="info-label"><i class="fas fa-broadcast-tower"></i> 전송</span>
+                <span class="info-value" id="robot-info-packets">0 패킷</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 시퀀서 타이머 바 -->
+          <div class="seq-timer-bar">
+            <div class="seq-timer-label">
+              <span id="seq-timer-label-text">대기 중</span>
+              <span id="seq-timer-value">--</span>
+            </div>
+            <div class="progress-bar-track">
+              <div class="progress-bar-fill green-fill" id="seq-timer-fill" style="width:0%"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 상태 머신 -->
+        <div class="panel">
+          <div class="panel-header">
+            <i class="fas fa-project-diagram"></i>
+            <span>시퀀서 상태 머신</span>
+          </div>
+          <div class="state-machine-row">
+            <div class="sm-state" id="sm-idle">
+              <div class="sm-label">IDLE</div>
+              <div class="sm-desc">감지 대기</div>
+            </div>
+            <div class="sm-arrow-h"><i class="fas fa-arrow-right"></i><small>trigger(N)</small></div>
+            <div class="sm-state" id="sm-action">
+              <div class="sm-label">ACTION</div>
+              <div class="sm-desc" id="sm-action-desc">모션 실행</div>
+            </div>
+            <div class="sm-arrow-h"><i class="fas fa-arrow-right"></i><small id="sm-timer-1">7s</small></div>
+            <div class="sm-state" id="sm-return">
+              <div class="sm-label">RETURN</div>
+              <div class="sm-desc">기본자세</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- HUD 메시지 -->
+        <div class="hud-panel" id="hud-panel">
+          <i class="fas fa-info-circle"></i>
+          <span id="hud-text">AI 모델 로딩 중...</span>
+        </div>
+
+        <!-- 수동 트리거 -->
+        <div class="panel">
+          <div class="panel-header">
+            <i class="fas fa-gamepad"></i>
+            <span>수동 모션 트리거</span>
+          </div>
+          <div class="manual-trigger-grid" id="manual-trigger-grid"></div>
+          <div class="manual-input-row">
+            <input type="number" id="manual-motion-input" min="1" max="30" placeholder="번호" />
+            <button class="btn-primary" id="manual-trigger-btn">
+              <i class="fas fa-play"></i> 실행
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── RIGHT: 매핑 + 설정 ── -->
+      <div class="col-config">
+
+        <!-- LABEL → MOTION 매핑 -->
+        <div class="panel">
+          <div class="panel-header">
+            <i class="fas fa-map-signs"></i>
+            <span>LABEL_TO_MOTION 매핑</span>
+            <button class="icon-btn ml-auto" id="add-mapping-btn" title="추가">
+              <i class="fas fa-plus"></i>
+            </button>
+          </div>
+          <div class="mapping-list" id="mapping-list"></div>
+        </div>
+
+        <!-- 설정 -->
+        <div class="panel">
+          <div class="panel-header">
+            <i class="fas fa-sliders-h"></i>
+            <span>시퀀서 설정</span>
+          </div>
+          <div class="config-grid">
+            <div class="config-row">
+              <label>ACTION_HOLD_SEC</label>
+              <input type="number" id="cfg-action-hold" value="7" min="1" max="30" />
+            </div>
+            <div class="config-row">
+              <label>RETURN_HOLD_SEC</label>
+              <input type="number" id="cfg-return-hold" value="3" min="1" max="30" />
+            </div>
+            <div class="config-row">
+              <label>RETURN_MOTION</label>
+              <input type="number" id="cfg-return-motion" value="1" min="1" max="30" />
+            </div>
+          </div>
+        </div>
+
+        <!-- 시리얼 모니터 -->
+        <div class="panel">
+          <div class="panel-header">
+            <i class="fas fa-terminal"></i>
+            <span>시리얼 로그</span>
+            <span class="panel-badge" id="serial-log-badge">미연결 · 115200</span>
+            <button class="icon-btn" id="clear-serial-btn" style="margin-left:4px;"><i class="fas fa-trash"></i></button>
+          </div>
+          <div class="serial-output" id="serial-output">
+            <div class="serial-line sys">[SYSTEM] 초기화 시작...</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- 컨트롤 바 (하단) -->
+    <div class="control-bar">
+      <button class="btn-danger" id="stop-btn">
+        <i class="fas fa-stop"></i> 중지
+      </button>
+      <button class="btn-primary hidden" id="restart-btn">
+        <i class="fas fa-redo"></i> 재시작
+      </button>
+      <div class="control-spacer"></div>
+      <span class="ctrl-info" id="ctrl-info">● 실시간 탐지 실행 중</span>
+    </div>
+
+  </section>
+
+  <!-- ═══════════════ TAB: PACKET ═══════════════ -->
+  <section id="tab-packet" class="tab-panel">
+    <div class="packet-layout">
+      <h2 class="section-title"><i class="fas fa-code"></i> 패킷 빌더</h2>
+      <div class="packet-grid">
+        <div class="panel packet-builder-panel">
+          <div class="panel-header"><i class="fas fa-wrench"></i><span>패킷 생성</span></div>
+          <div class="packet-form">
+            <div class="pkt-row">
+              <label>모션 번호</label>
+              <div class="pkt-input-group">
+                <input type="number" id="pkt-motion-id" min="1" max="30" value="19" />
+                <button class="btn-primary" id="pkt-build-btn"><i class="fas fa-hammer"></i> 빌드</button>
+              </div>
+            </div>
+            <div class="pkt-quick-select">
+              <span>빠른 선택:</span>
+              <button class="pkt-quick-btn" data-motion="1">1 기본</button>
+              <button class="pkt-quick-btn" data-motion="18">18 손흔들기</button>
+              <button class="pkt-quick-btn" data-motion="19">19 인사</button>
+              <button class="pkt-quick-btn" data-motion="20">20 커스텀</button>
+            </div>
+          </div>
+          <div class="packet-visualizer">
+            <div class="pkt-bytes" id="pkt-bytes"></div>
+            <div class="pkt-legend">
+              <span class="legend-item header-legend"><span></span> Header</span>
+              <span class="legend-item reserved-legend"><span></span> Reserved</span>
+              <span class="legend-item cmd-legend"><span></span> Command</span>
+              <span class="legend-item motion-legend"><span></span> Motion ID</span>
+              <span class="legend-item extra-legend"><span></span> Speed</span>
+              <span class="legend-item crc-legend"><span></span> Checksum</span>
+            </div>
+            <div class="pkt-hex-output">
+              <label>HEX:</label>
+              <code id="pkt-hex-output">FF FF 4C 53 00 00 00 00 30 0C 03 13 00 64 B6</code>
+            </div>
+            <div class="pkt-checksum-calc">
+              <label>체크섬:</label>
+              <code id="pkt-checksum-detail"></code>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel packet-spec-panel">
+          <div class="panel-header"><i class="fas fa-file-alt"></i><span>통신 규격 · 전송 기록</span></div>
+          <div class="spec-table-wrap">
+            <table class="spec-table">
+              <thead><tr><th>항목</th><th>값</th></tr></thead>
+              <tbody>
+                <tr><td>Baudrate</td><td><code>115200 bps</code></td></tr>
+                <tr><td>패킷 크기</td><td><code>15 bytes</code></td></tr>
+                <tr><td>헤더</td><td><code>FF FF 4C 53</code></td></tr>
+                <tr><td>모션 인덱스</td><td><code>byte[11]</code></td></tr>
+                <tr><td>체크섬</td><td><code>byte[6~13] & 0xFF</code></td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="pkt-history-wrap">
+            <div class="pkt-history-title"><i class="fas fa-history"></i> 전송 기록</div>
+            <div class="pkt-history" id="pkt-history">
+              <div class="pkt-history-empty">아직 전송 없음</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════ TAB: DOCS ═══════════════ -->
+  <section id="tab-docs" class="tab-panel">
+    <div class="docs-layout">
+      <aside class="docs-sidebar">
+        <nav class="docs-nav">
+          <a href="#doc-intro"       class="docs-nav-item active">📌 소개</a>
+          <a href="#doc-flow"        class="docs-nav-item">🔄 동작 흐름</a>
+          <a href="#doc-mapping"     class="docs-nav-item">🗺️ 매핑</a>
+          <a href="#doc-hardware"    class="docs-nav-item">📡 하드웨어</a>
+          <a href="#doc-troubleshoot" class="docs-nav-item">🔧 트러블슈팅</a>
+        </nav>
+      </aside>
+      <article class="docs-content">
+        <section id="doc-intro">
+          <h2>📌 프로젝트 소개</h2>
+          <p>COCO-SSD(TensorFlow.js)로 웹캠에서 실시간 객체를 탐지하고, 탐지된 객체에 따라 휴머노이드 로봇의 모션을 자동 실행합니다.</p>
+          <div class="docs-callout">
+            <strong>💡 핵심 파이프라인</strong>
+            <ul>
+              <li>웹캠 영상 → COCO-SSD 추론 → 라벨 매핑 → MotionSequencer → 로봇 패킷 전송</li>
+              <li>포트 선택 팝업 · 115200bps (Web Serial API 연결 시 실물 로봇 제어)</li>
+              <li>LABEL_TO_MOTION 매핑 테이블로 어떤 객체든 원하는 모션에 연결 가능</li>
+            </ul>
+          </div>
+        </section>
+        <section id="doc-flow">
+          <h2>🔄 동작 흐름</h2>
+          <div class="code-block"><pre>
+[1] 페이지 로드 → COCO-SSD 모델 자동 로드
+[2] 카메라 권한 요청 → 웹캠 스트리밍 시작
+[3] 매 프레임: model.detect(video) → predictions[]
+[4] confidence ≥ threshold 인 객체만 필터링
+[5] LABEL_TO_MOTION에 매핑된 객체 발견 시
+    → MotionSequencer.trigger(motionId)
+[6] 시퀀서: ACTION(7초) → RETURN(3초) → IDLE
+[7] 각 단계마다 HumanoidRobot.buildPacket(id) 전송</pre></div>
+        </section>
+        <section id="doc-mapping">
+          <h2>🗺️ LABEL_TO_MOTION 매핑</h2>
+          <p>COCO-SSD가 인식하는 <strong>80가지 클래스</strong> 중 원하는 객체에 모션 번호를 연결하세요.</p>
+          <div class="code-block"><pre>
+LABEL_TO_MOTION = {
+  <span class="str">"person"</span>:     <span class="num">19</span>,  <span class="cm">// 👤 사람 → 인사</span>
+  <span class="str">"bottle"</span>:     <span class="num">18</span>,  <span class="cm">// 🍾 병  → 손흔들기</span>
+  <span class="str">"cell phone"</span>: <span class="num">20</span>,  <span class="cm">// 📱 폰  → 커스텀</span>
+}</pre></div>
+        </section>
+        <section id="doc-hardware">
+          <h2>📡 하드웨어 통신 규격</h2>
+          <table class="docs-table">
+            <thead><tr><th>항목</th><th>값</th></tr></thead>
+            <tbody>
+              <tr><td>포트</td><td><code>사용자 선택</code></td></tr>
+              <tr><td>Baudrate</td><td><code>115200 bps</code></td></tr>
+              <tr><td>패킷 크기</td><td><code>15 bytes</code></td></tr>
+              <tr><td>헤더</td><td><code>FF FF 4C 53</code></td></tr>
+              <tr><td>모션 인덱스</td><td><code>byte[11]</code></td></tr>
+              <tr><td>체크섬</td><td><code>byte[6]~byte[13] 합산 &amp; 0xFF</code></td></tr>
+            </tbody>
+          </table>
+          <h3>패킷 예시 (모션 19번 — 인사)</h3>
+          <div class="code-block"><pre>FF FF 4C 53 00 00 00 00 30 0C 03 <span class="num">13</span> 00 64 <span class="str">B6</span>
+                                          ↑↑↑           ↑↑↑
+                                        Motion=19      CRC</pre></div>
+        </section>
+        <section id="doc-troubleshoot">
+          <h2>🔧 트러블슈팅</h2>
+          <div class="troubleshoot-list">
+            <details class="ts-item">
+              <summary>카메라가 안 켜질 때</summary>
+              <p>브라우저 주소창 좌측 자물쇠 아이콘 → 카메라 → 허용 후 새로고침</p>
+            </details>
+            <details class="ts-item">
+              <summary>모델 로드가 안 될 때</summary>
+              <p>인터넷 연결 확인 후 새로고침. jsDelivr CDN에서 TF.js 파일을 다운로드합니다.</p>
+            </details>
+            <details class="ts-item">
+              <summary>탐지는 되는데 로봇이 안 움직일 때</summary>
+              <p>신뢰도 임계값을 낮춰보세요 (0.3~0.4). LABEL_TO_MOTION 매핑을 확인하세요.</p>
+            </details>
+            <details class="ts-item">
+              <summary>탐지가 너무 자주/드물게 될 때</summary>
+              <p>신뢰도 슬라이더로 조정하세요. ACTION_HOLD_SEC를 늘리면 중복 실행을 방지합니다.</p>
+            </details>
+          </div>
+        </section>
+      </article>
+    </div>
+  </section>
+
+</main>
+
+<!-- 매핑 추가 모달 -->
+<div id="mapping-modal" class="modal-overlay hidden">
+  <div class="modal-box small">
+    <div class="modal-header">
+      <i class="fas fa-plus"></i>
+      <h2>매핑 추가</h2>
+    </div>
+    <div class="mapping-form">
+      <label>객체 라벨 (COCO 클래스)</label>
+      <input type="text" id="mapping-label-input" placeholder="person, bottle, cup ..." list="coco-labels" />
+      <datalist id="coco-labels"></datalist>
+      <label>모션 번호 (1~30)</label>
+      <input type="number" id="mapping-motion-input" min="1" max="30" placeholder="예: 19" />
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" id="mapping-cancel-btn">취소</button>
+      <button class="btn-primary" id="mapping-save-btn"><i class="fas fa-check"></i> 추가</button>
+    </div>
+  </div>
+</div>
+
+<script src="js/robot-controller.js"></script>
+<script src="js/yolo-simulator.js"></script>
+<script src="js/packet-builder.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
